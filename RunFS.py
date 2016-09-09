@@ -6,6 +6,7 @@ import scipy.signal as sig
 import numpy as np
 import nibabel as nb
 from multiprocessing import Pool
+import multiprocessing
 import subprocess as sp
 import re
 
@@ -33,16 +34,16 @@ class WorkingFile:
         self.TR=0
         self.UseOrder=False
         self.OrderFile=''
+        self.UseTiming=False
+        self.TimingFile=''        
         self.Ref=0
         self.UserOutput=''
-        self.UseTiming=False
-        self.TimingFile=''
-        
+
 
 
 
 def usage():
-    print'USAGE: ./RunFS.py -in <InputFile> -tr <TR> -i <Int> [-out <OutputFile> ] [-s <StartSlice>] [-d <Direction>] [-o <SliceORderFile>] [-r <RefSlice>] [-c <nCores>] [-m <Memory>] [-Force]'
+    print'USAGE: ./RunFS.py -in <InputFile> -tr <TR> -i <Int> [-out <OutputFile> ] [-s <StartSlice>] [-d <Direction>] [-o <SliceOrderFile>] [-i <SliceTimingFile>] [-r <RefSlice>] [-c <nCores>] [-m <Memory>] [-Force]'
     print '<>:\t User Defined Input'
     print '[]:\t Optional Input\n'
     
@@ -66,14 +67,21 @@ def usage():
     print '\t1: implies ascending slice acquisition from starting slice: (3,5,7,9...)'
     print '\t-1: implies descending slice acquisition from starting slice: (7,5,3,...)\n'
     
-    print('-o:\t Slice Order File.  This file is the order in which each slice was acquired.  If present, all interelave parameters are ignored, and slices are shifted using the slice order file')
-    print('\t we refer to the bottom slice in the image as slice 1, not slice 0')
+    print('-o:\t Slice Order File.  This file is the order in which each slice was acquired. each row represents the order in which that slice was acquired.')
+    print('\t For example, "1" in the first row means that slice 1 was aquired first.  "20" in the second row means that slice 2 was acquired 20th.')
+    print('\t If present, all interelave parameters are ignored, and slices are shifted using the slice order file')
+    print('\t we refer to the bottom slice in the image as slice 1, not slice 0\n')
 
-    print('-t:\t Slice Timing File.  If present, all interelave parameters are ignored, and slices are shifted using the slice order file')
-    print('\t we refer to the bottom slice in the image as slice 1, not slice 0')
+    print('-t:\t Slice Timing File.  This file is the time at which each slice was acquired relative to the first slice. each row represents the time at which that slice was acquired.')
+    print('\t For example, "0" in the first row means that slice 1 was aquired first, and will be shifted 0 seconds.  "0.5" in the second row')
+    print('\t means that slice 2 was acquired 0.5 seconds after the first slice, and will be shifted 0.5s.')
+    print('\t If present, all interelave parameters are ignored, and slices are shifted using the slice timing file.')
+    print('\t If you put both a slice timing and a slice order, the program will yell at you and refuse to run.\n')
     
     print '-r:\t Set the Reference slice'
     print('\tThis is the slice the data is aligned to.  Default is the first slice\n')
+    
+    
     print('-c:\t the number of cores free on your computer for parallel processing.  The default is one less than the number of cores your computer has.')
     print('\tIt is highly recommended that you use parallel processing to speed up this operation\n')
     print('-m:\t amount of free memory you have, in GB, so the system knows how much load it can give each core. The default is 4\n')
@@ -387,7 +395,7 @@ def CreateJobsFromFile(f):
             print('Error Loading Slice Order Flie {}'.format(f.OrderFile))
         
         if not len(SliceOrder) ==lz:
-            print('Slice Order File does not match number of slices in {}'.format(f.InputNii))
+            print('Slice Order File {} does not match number of slices in {}'.format(f.OrderFile,f.InputNii))
             quit()
         
         # Load the file and calculate the exact time of acquision based of the TR and the number of slices
@@ -395,8 +403,38 @@ def CreateJobsFromFile(f):
         SliceShift=SliceOrder*shift
         SliceShift=SliceShift-SliceShift[Start]
     
-    
-    #TODO Add Slice Timing File Here
+    # Or we will try to use a timing file
+    elif f.UseTiming:
+        try:
+            SliceTiming=np.loadtxt(f.TimingFile)
+        except:
+            print('Error Loading Slice Timing File {}'.format(f.TimingFile))
+            
+        # Make sure it's the correct length
+        if not len(SliceTiming)==lz:
+            print ('Slice Timing File {} Does Not Match Number of slices in {}'.format(f.TimingFile,f.InputNii))
+            quit()
+        
+        # Make sure it doesn't exceed the TR:
+        if np.amax(SliceTiming)>Tr:
+            print('Slice Timing File {} Exceeds TR of {}'.format(f.TimingFile,Tr))
+        
+        # Try to create a slice order file from it - also try to make it work for multiband-
+        TempSliceTiming=np.copy(SliceTiming)
+        SliceOrder=np.zeros(lz)
+        SliceCount=0
+        while any(TempSliceTiming<=Tr):            
+            minDelay=np.amin(TempSliceTiming)
+            mind=np.where(TempSliceTiming==minDelay)
+            SliceOrder[mind]=SliceCount
+            TempSliceTiming[mind]=Tr*2
+            SliceCount+=1
+        
+        print SliceOrder
+        print SliceTiming
+        SliceShift=SliceTiming
+        
+            
     
     # Otherwise just create a slice timing file using the start slice and intereleave parameter
     else:
@@ -625,26 +663,28 @@ def CompileNii(f):
         
         # Load the SliceInd files, which tell us which index each row in the FS text file corresponds to in the Original time series file
         ind=np.loadtxt(os.path.join(txtDir,'SliceInd_{}.txt'.format(z)))
-        ind=np.array([int(n) for n in ind])
-        
-        # The voxels we filtered aren't every voxel in the slice, so we'll store them in a separate variable that will be less than or equal to lx*ly by lt in size
-        zchunks=[]
-        
-        # Now loop through the text files associated with the slice
-        for ii in range(nzchunks):
-            #print(os.path.join(txtDir,'FS_{}_{}_{}.txt'.format('Image',z,ii)))
-            newdata=np.loadtxt(os.path.join(txtDir,'FS_{}_{}_{}.txt'.format('Image',z,ii)))
+        if not len(ind)==0:
+            ind=np.array([int(n) for n in ind])
             
-            # Resize the loaded data so it can be appended to a 2d matrix
-            if newdata.ndim==1:
-                newdata=np.expand_dims(newdata,0)
             
-            # Add the new data do the zchunks 
-            zchunks.extend(newdata)
-        
-        # Assuming that there were ANY timeseries text files for this slice, just assign the "zchunks" rows to the "zstack" rows as indicated by "ind"
-        if nzchunks>0:
-            zstack[ind,:]=zchunks
+            # The voxels we filtered aren't every voxel in the slice, so we'll store them in a separate variable that will be less than or equal to lx*ly by lt in size
+            zchunks=[]
+            
+            # Now loop through the text files associated with the slice
+            for ii in range(nzchunks):
+                #print(os.path.join(txtDir,'FS_{}_{}_{}.txt'.format('Image',z,ii)))
+                newdata=np.loadtxt(os.path.join(txtDir,'FS_{}_{}_{}.txt'.format('Image',z,ii)))
+                
+                # Resize the loaded data so it can be appended to a 2d matrix
+                if newdata.ndim==1:
+                    newdata=np.expand_dims(newdata,0)
+                
+                # Add the new data do the zchunks 
+                zchunks.extend(newdata)
+            
+            # Assuming that there were ANY timeseries text files for this slice, just assign the "zchunks" rows to the "zstack" rows as indicated by "ind"
+            if nzchunks>0:
+                zstack[ind,:]=zchunks
         
         # Reshape the processed time series back to the proper slice dimensions
         zstack=np.reshape(zstack,(lx,ly,1,lt))
@@ -763,9 +803,18 @@ if __name__ == '__main__':
                         quit()
                 
                 elif i=='-o':
+                    if f.UseTiming==True:
+                        print("NO! I DON'T NEED A SLICE TIMING AND A SLICE ORDER FILE, YOU HAVE TO PICK ONE OR THE OTHER")
+                        quit()                        
                     f.UseOrder=True
                     f.OrderFile=arg.pop(0)
-
+                elif i=='-t':
+                    if f.UseOrder==True:
+                        print("NO! I DON'T NEED A SLICE TIMING AND A SLICE ORDER FILE, YOU HAVE TO PICK ONE OR THE OTHER")
+                        quit() 
+                    f.UseTiming=True
+                    f.TimingFile=arg.pop(0)
+                    
                 elif i=='-i':
                     f.Int=int(arg.pop(0))
 
