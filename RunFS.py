@@ -43,14 +43,14 @@ class WorkingFile:
 
 
 def usage():
-    print'USAGE: ./RunFS.py -in <InputFile> -tr <TR> -i <Int> [-out <OutputFile> ] [-s <StartSlice>] [-d <Direction>] [-o <SliceOrderFile>] [-i <SliceTimingFile>] [-r <RefSlice>] [-c <nCores>] [-m <Memory>] [-Force]'
+    print'USAGE: ./RunFS.py -in <InputFile> -tr <TR> [ -i <Int> ] [-out <OutputFile> ] [-s <StartSlice>] [-d <Direction>] [-o <SliceOrderFile>] [-i <SliceTimingFile>] [-r <RefSlice>] [-c <nCores>] [-m <Memory>] [-Force]'
     print '<>:\t User Defined Input'
     print '[]:\t Optional Input\n'
     
     print '-in:\t The input image to perform STC on\n'
     print '-tr:\t Set the TR of the original fMRI data in seconds\n'
     
-    print '-i:\t Set the sampling interleave acquisition parameter. This number refers to how far away the next sampled slice is'
+    print '-i:\t Set the sampling interleave acquisition parameter. This number refers to how far away the next sampled slice is.  This is ignored if there is a slice timing or order file provided.'
     print('\t0: No STC, only run filtering')
     print('\t1: Sequential acquisition - The next slice to be acquired from any slice s is slice s+1')
     print('\t2: Even-Odd interleave (Every Other) - The next slice to be acquired from any slice s is slice s+2')
@@ -79,8 +79,7 @@ def usage():
     print('\t If you put both a slice timing and a slice order, the program will yell at you and refuse to run.\n')
     
     print '-r:\t Set the Reference slice'
-    print('\tThis is the slice the data is aligned to.  Default is the first slice\n')
-    
+    print('\tThis is the slice the data is temporally aligned to.  Default is the first slice\n')    
     
     print('-c:\t the number of cores free on your computer for parallel processing.  The default is one less than the number of cores your computer has.')
     print('\tIt is highly recommended that you use parallel processing to speed up this operation\n')
@@ -131,6 +130,7 @@ def FiltShift(Inputs):
         stderror=Inputs[5]
     else:
         stderror=''
+        
 # The main filtershift function, takes a single vector ZTshift
 # ZTshift: [Slice Number, Time Shift]
 # where Slice Number is the index of the slice to be shifted, and Time Shift is the amount to shift.  This can be positive or negative.
@@ -399,9 +399,12 @@ def CreateJobsFromFile(f):
             quit()
         
         # Load the file and calculate the exact time of acquision based of the TR and the number of slices
-        shift=(TR-TR*1.0/lz)/lz
+        shift=(Tr*1.0/lz)
+        print shift
         SliceShift=SliceOrder*shift
-        SliceShift=SliceShift-SliceShift[Start]
+        print SliceShift
+        SliceShift=SliceShift-SliceShift[f.Ref]
+        print SliceShift
     
     # Or we will try to use a timing file
     elif f.UseTiming:
@@ -440,6 +443,7 @@ def CreateJobsFromFile(f):
     else:
         
         SliceOrder, SliceShift = MakeT(f.Int, f.Ref, lz, Tr,f.startSlice, f.Direction)
+        print SliceShift
     
     print('Using Slice Order:\n{}'.format(SliceOrder+1))
     
